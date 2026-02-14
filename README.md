@@ -88,8 +88,8 @@ Madison-Framework/
 ├── .streamlit/
 │   ├── config.toml         # Streamlit theme configuration
 │   └── secrets.toml        # Local API keys (not committed)
-├── A5_Part1_Template.md    # Competitor & trademark analysis template
-└── A5_Part3_Template.md    # User testing documentation template
+
+
 ```
 
 ## Author
