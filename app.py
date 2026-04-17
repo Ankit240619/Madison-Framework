@@ -734,7 +734,7 @@ if run_btn:
             return colors.get(val, "")
 
         st.dataframe(
-            df_anom.style.applymap(color_severity, subset=["Severity"]),
+            df_anom.style.map(color_severity, subset=["Severity"]),
             use_container_width=True,
             hide_index=True,
         )
