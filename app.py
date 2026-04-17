@@ -314,7 +314,10 @@ Respond in this JSON format:
         )
         return response.choices[0].message.content
     except Exception as e:
-        return json.dumps({"error": str(e), "analysis_summary": "AI analysis unavailable"})
+        err_msg = str(e)
+        if "insufficient_quota" in err_msg or "429" in err_msg or "quota" in err_msg.lower():
+            return "__QUOTA_EXCEEDED__"
+        return json.dumps({"error": err_msg, "analysis_summary": "AI analysis unavailable"})
 
 
 def call_insights_narrator(client, anomaly_text: str, news_context: list[dict]) -> str:
@@ -368,6 +371,9 @@ Respond in this format:
         )
         return response.choices[0].message.content
     except Exception as e:
+        err_msg = str(e)
+        if "insufficient_quota" in err_msg or "429" in err_msg or "quota" in err_msg.lower():
+            return "__QUOTA_EXCEEDED__"
         return f"# Error\n\nInsight generation failed: {e}"
 
 
@@ -593,19 +599,10 @@ if run_btn:
     anomaly_text = ""
     executive_summary = ""
 
-    if openai_key and OpenAI:
-        client = OpenAI(api_key=openai_key)
-        with st.status("Running AI analysis...", expanded=True) as ai_status:
-            st.write("GPT-4o-mini: Classifying anomalies...")
-            anomaly_text = call_anomaly_detector(client, stats)
-            st.write("GPT-4o-mini: Generating executive summary...")
-            news_context = [{"source": n["source_name"], "title": n["title"], "date": n["timestamp"]} for n in news[:10]]
-            executive_summary = call_insights_narrator(client, anomaly_text, news_context)
-            ai_status.update(label="AI analysis complete", state="complete")
-    else:
-        st.info("OpenAI API key not configured. Showing statistical analysis only (no AI narrative).")
-        anomaly_text = json.dumps({
-            "analysis_summary": "AI analysis unavailable — no API key configured.",
+    def _build_statistical_fallback(stats, sigma_mult, reason="no API key configured"):
+        """Build anomaly_text and executive_summary using pure statistical analysis (no OpenAI)."""
+        _anomaly_text = json.dumps({
+            "analysis_summary": f"AI analysis unavailable — {reason}.",
             "confirmed_anomalies": [
                 {
                     "record_id": a["record_id"],
@@ -618,20 +615,52 @@ if run_btn:
             ],
             "risk_level": "HIGH" if stats.get("potential_anomalies_count", 0) > 3 else "MEDIUM",
         }, indent=2)
-        executive_summary = f"""# Madison Transparency Agent - Executive Summary
+        _health = "CRITICAL" if stats.get("potential_anomalies_count", 0) > 5 else "WARNING" if stats.get("potential_anomalies_count", 0) > 0 else "HEALTHY"
+        _executive_summary = f"""# Madison Transparency Agent - Executive Summary
 
-## Overall System Health: {"CRITICAL" if stats.get("potential_anomalies_count", 0) > 5 else "WARNING" if stats.get("potential_anomalies_count", 0) > 0 else "HEALTHY"}
+## Overall System Health: {_health}
 
 ## Key Findings
 - Analyzed {stats['total_records']} CPU utilization records from the NAB benchmark dataset.
 - Detected {stats['potential_anomalies_count']} potential anomalies above the {stats['anomaly_threshold']}% threshold ({sigma_mult}σ).
 - CPU utilization ranged from {stats['min']}% to {stats['max']}% with an average of {stats['average']}%.
 
+## Anomaly Details
+{chr(10).join(f"- Record {a['record_id']} at {a['timestamp']}: CPU at {a['metric_value']}% — {'CRITICAL' if a['metric_value'] > 80 else 'HIGH' if a['metric_value'] > 60 else 'MEDIUM'} severity" for a in stats.get("potential_anomalies", [])[:5]) or "- No anomalies detected above threshold."}
+
 ## Recommended Actions
 1. Investigate timestamps where CPU exceeded {stats['anomaly_threshold']}%.
 2. Set up real-time alerting for values above {round(stats['anomaly_threshold'] * 0.9, 1)}%.
-3. Review workload scaling policies.
+3. Review workload scaling policies to prevent recurrence.
+4. Cross-reference spikes with deployment logs and cloud provider status pages.
 """
+        return _anomaly_text, _executive_summary
+
+    if openai_key and OpenAI:
+        client = OpenAI(api_key=openai_key)
+        quota_exceeded = False
+        with st.status("Running AI analysis...", expanded=True) as ai_status:
+            st.write("GPT-4o-mini: Classifying anomalies...")
+            anomaly_text = call_anomaly_detector(client, stats)
+            if anomaly_text == "__QUOTA_EXCEEDED__":
+                quota_exceeded = True
+            else:
+                st.write("GPT-4o-mini: Generating executive summary...")
+                news_context = [{"source": n["source_name"], "title": n["title"], "date": n["timestamp"]} for n in news[:10]]
+                executive_summary = call_insights_narrator(client, anomaly_text, news_context)
+                if executive_summary == "__QUOTA_EXCEEDED__":
+                    quota_exceeded = True
+            if quota_exceeded:
+                ai_status.update(label="AI unavailable — using statistical mode", state="error")
+            else:
+                ai_status.update(label="AI analysis complete", state="complete")
+
+        if quota_exceeded:
+            st.info("ℹ️ OpenAI quota exceeded. Showing statistical anomaly detection — all charts and anomaly data are fully functional.", icon="ℹ️")
+            anomaly_text, executive_summary = _build_statistical_fallback(stats, sigma_mult, reason="OpenAI quota exceeded")
+    else:
+        st.info("OpenAI API key not configured. Showing statistical analysis only (no AI narrative).")
+        anomaly_text, executive_summary = _build_statistical_fallback(stats, sigma_mult)
 
     # ──────────────────────────────────────────────
     # Output Dashboard
